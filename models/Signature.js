@@ -1,4 +1,3 @@
-// models/Signature.js
 const mongoose = require('mongoose');
 
 const signatureSchema = new mongoose.Schema({
@@ -13,6 +12,11 @@ const signatureSchema = new mongoose.Schema({
   url: {
     type: String,
     required: true
+  },
+  signatureType: {
+    type: String,
+    required: true,
+    enum: ['primary', 'secondary', 'tertiary'] // Three signature types
   },
   uploadedAt: {
     type: Date,

@@ -496,7 +496,9 @@ exports.createReport = async (req, res) => {
       electricalSupply, powerFluctuation, customerComplaint, actualFault, actionTaken,
       spareParts, equipments, serviceRemarks, customerRemarks, userName, userDate,
       userSignature, engineeringName, engineeringDate, engineeringSignature,
-      serviceEngineerName, serviceEngineerDate
+      serviceEngineerName, serviceEngineerDate,
+      // NEW: Add these fields
+      selectedServiceSignatureType, selectedServiceSignatureUrl, selectedServiceSignatureId
     } = req.body;
 
     // Parse arrays
@@ -515,7 +517,7 @@ exports.createReport = async (req, res) => {
     parsedSpareParts = parsedSpareParts.filter(p => p && String(p).trim());
     parsedEquipments = parsedEquipments.filter(e => e && String(e).trim());
 
-    // Process uploaded images - FIXED THIS PART
+    // Process uploaded images
     let beforeServiceImages = [];
     let afterServiceImages = [];
 
@@ -544,6 +546,7 @@ exports.createReport = async (req, res) => {
     }
 
     console.log('Creating report with SL No:', slNo);
+    console.log('Selected service signature type:', selectedServiceSignatureType);
 
     const newReport = new ServiceReport({
       slNo: parseInt(slNo) || 1,
@@ -580,6 +583,10 @@ exports.createReport = async (req, res) => {
       engineeringSignature: engineeringSignature || null,
       serviceEngineerName: serviceEngineerName || '',
       serviceEngineerDate: serviceEngineerDate ? new Date(serviceEngineerDate) : null,
+      // NEW: Store selected signature information
+      selectedServiceSignatureType: selectedServiceSignatureType || null,
+      selectedServiceSignatureUrl: selectedServiceSignatureUrl || null,
+      selectedServiceSignatureId: selectedServiceSignatureId || null,
       beforeServiceImages,
       afterServiceImages
     });
@@ -596,6 +603,7 @@ exports.createReport = async (req, res) => {
     }
 
     console.log('Report saved successfully with ID:', newReport._id);
+    console.log('Selected signature stored:', newReport.selectedServiceSignatureType);
 
     res.status(201).json({
       success: true,

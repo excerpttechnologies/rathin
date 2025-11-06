@@ -1,4 +1,3 @@
-// signature-routes.js
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -10,7 +9,6 @@ const Signature = require('../models/Signature');
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     const uploadDir = path.join(__dirname, '../uploads/signatures');
-    // Create directory if it doesn't exist
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
@@ -43,48 +41,63 @@ const upload = multer({
 // Serve static files from uploads directory
 router.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// GET - Fetch current admin signature
+// GET - Fetch all three admin signatures
 router.get('/admin-signature', async (req, res) => {
   try {
-    const signature = await Signature.findOne().sort({ uploadedAt: -1 });
+    const signatures = await Signature.find().sort({ signatureType: 1 });
     
-    if (signature) {
-      res.json({
-        id: signature._id.toString(),
-        filename: signature.filename,
-        filepath: signature.filepath,
-        url: `/api/uploads/signatures/${signature.filename}`, // Full URL
-        uploadedAt: signature.uploadedAt
-      });
-    } else {
-      res.status(404).json({ message: 'No signature found' });
-    }
+    // Create response with all three signature types
+    const signatureData = {
+      primary: null,
+      secondary: null,
+      tertiary: null
+    };
+
+    signatures.forEach(sig => {
+      signatureData[sig.signatureType] = {
+        id: sig._id.toString(),
+        filename: sig.filename,
+        filepath: sig.filepath,
+        url: `/uploads/signatures/${sig.filename}`,
+        uploadedAt: sig.uploadedAt
+      };
+    });
+
+    res.json(signatureData);
   } catch (error) {
-    console.error('Error fetching signature:', error);
-    res.status(500).json({ message: 'Failed to fetch signature' });
+    console.error('Error fetching signatures:', error);
+    res.status(500).json({ message: 'Failed to fetch signatures' });
   }
 });
 
-// POST - Upload new admin signature
+// POST - Upload admin signature (specify type in query parameter)
 router.post('/admin-signature/upload', upload.single('signature'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No file uploaded' });
     }
 
-    const currentSignature = await Signature.findOne().sort({ uploadedAt: -1 });
+    const { signatureType } = req.query; // Get signature type from query params
+
+    if (!signatureType || !['primary', 'secondary', 'tertiary'].includes(signatureType)) {
+      return res.status(400).json({ message: 'Invalid signature type. Use primary, secondary, or tertiary' });
+    }
+
+    // Check if signature of this type already exists
+    const existingSignature = await Signature.findOne({ signatureType });
     
-    if (currentSignature && currentSignature.filepath) {
-      if (fs.existsSync(currentSignature.filepath)) {
-        fs.unlinkSync(currentSignature.filepath);
+    if (existingSignature && existingSignature.filepath) {
+      if (fs.existsSync(existingSignature.filepath)) {
+        fs.unlinkSync(existingSignature.filepath);
       }
-      await Signature.findByIdAndDelete(currentSignature._id);
+      await Signature.findByIdAndDelete(existingSignature._id);
     }
 
     const signatureData = new Signature({
       filename: req.file.filename,
       filepath: req.file.path,
-      url: `/api/uploads/signatures/${req.file.filename}`, // Full URL
+      url: `/uploads/signatures/${req.file.filename}`,
+      signatureType: signatureType,
       uploadedAt: new Date()
     });
 
@@ -95,6 +108,7 @@ router.post('/admin-signature/upload', upload.single('signature'), async (req, r
       filename: signatureData.filename,
       filepath: signatureData.filepath,
       url: signatureData.url,
+      signatureType: signatureData.signatureType,
       uploadedAt: signatureData.uploadedAt
     });
   } catch (error) {
@@ -103,16 +117,16 @@ router.post('/admin-signature/upload', upload.single('signature'), async (req, r
   }
 });
 
-// DELETE - Delete admin signature
-router.delete('/admin-signature/:id', async (req, res) => {
+// DELETE - Delete specific signature by type
+router.delete('/admin-signature/:type', async (req, res) => {
   try {
-    const signatureId = req.params.id;
+    const signatureType = req.params.type;
     
-    if (!signatureId || signatureId === 'undefined') {
-      return res.status(400).json({ message: 'Invalid signature ID' });
+    if (!signatureType || !['primary', 'secondary', 'tertiary'].includes(signatureType)) {
+      return res.status(400).json({ message: 'Invalid signature type' });
     }
 
-    const signature = await Signature.findById(signatureId);
+    const signature = await Signature.findOne({ signatureType });
     
     if (!signature) {
       return res.status(404).json({ message: 'Signature not found' });
@@ -122,7 +136,7 @@ router.delete('/admin-signature/:id', async (req, res) => {
       fs.unlinkSync(signature.filepath);
     }
 
-    await Signature.findByIdAndDelete(signatureId);
+    await Signature.findByIdAndDelete(signature._id);
 
     res.status(200).json({ message: 'Signature deleted successfully' });
   } catch (error) {
