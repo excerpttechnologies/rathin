@@ -324,7 +324,12 @@ customerSignedAt: { type: Date },
 // Engineer share fields
 engineerShareToken:  { type: String, unique: true, sparse: true },
 engineerShareStatus: { type: String, enum: ['pending', 'signed'], default: 'pending' },
+engineerRemarks: { type: String, default: '' },
 engineerSignedAt:    { type: Date },
+
+
+
+
 
   
   // PDF File Path
