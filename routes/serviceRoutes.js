@@ -124,4 +124,21 @@ router.put('/api/service-reports/:id',
 router.delete('/api/service-reports/:id', serviceController.deleteReport);
 router.get('/api/service-reports/download/:id', serviceController.downloadPDF);
 
+
+
+
+// Customer share routes (no file upload needed)
+router.post('/api/service-reports/:id/generate-share-link', serviceController.generateShareLink);
+router.get('/api/sign/:token', serviceController.getReportByToken);
+router.post('/api/sign/:token', serviceController.submitCustomerSignature);
+
+
+
+// ─── Engineer Share Routes ─────────────────────────────────────────────────
+router.post('/api/service-reports/:id/generate-engineer-share-link', serviceController.generateEngineerShareLink);
+router.get('/api/engineer-sign/:token', serviceController.getReportByEngineerToken);
+router.post('/api/engineer-sign/:token', serviceController.submitEngineerSignature);
+
+
+
 module.exports = router;

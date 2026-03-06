@@ -241,6 +241,9 @@ const serviceReportSchema = new mongoose.Schema({
   billDate: Date,
   billNo: String,
   maintenanceType: String,
+
+
+  
   
   // Outlet Details
   outletName: String,
@@ -309,12 +312,30 @@ const serviceReportSchema = new mongoose.Schema({
     type: { type: String, default: 'after' }
   }],
   
+// Add these fields to your existing serviceReportSchema
+shareToken: { type: String, unique: true, sparse: true },
+shareStatus: { type: String, enum: ['pending', 'signed'], default: 'pending' },
+customerSignedAt: { type: Date },
+
+
+
+
+
+// Engineer share fields
+engineerShareToken:  { type: String, unique: true, sparse: true },
+engineerShareStatus: { type: String, enum: ['pending', 'signed'], default: 'pending' },
+engineerSignedAt:    { type: Date },
+
+  
   // PDF File Path
   filePath: { type: String },
   
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
+
+
+
 
 // Auto-increment hook (for saving)
 serviceReportSchema.pre('save', async function(next) {
@@ -334,6 +355,11 @@ serviceReportSchema.pre('save', async function(next) {
   next();
 });
 
+
+
+
+
+
 // ✅ NEW: Auto-decrement hook (when deleted)
 serviceReportSchema.post('findOneAndDelete', async function (doc) {
   try {
@@ -351,5 +377,11 @@ serviceReportSchema.post('findOneAndDelete', async function (doc) {
     console.error('Error decrementing counter after delete:', error);
   }
 });
+
+
+
+
+
+
 
 module.exports = mongoose.model('ServiceReport', serviceReportSchema);
