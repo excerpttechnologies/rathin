@@ -1,5 +1,6 @@
 
 const ServiceReport = require('../models/ServiceReport');
+const FormAutocomplete = require('../models/FormAutocomplete');
 const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
@@ -608,6 +609,68 @@ exports.submitDualSignature = async (req, res) => {
   }
 };
 
+
+
+
+const getAutocomplete = async (req, res) => {
+  try {
+    let doc = await FormAutocomplete.findById('global');
+    if (!doc) {
+      doc = await FormAutocomplete.create({ _id: 'global' });
+    }
+    return res.json({ success: true, autocomplete: doc.toObject() });
+  } catch (err) {
+    console.error('getAutocomplete error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+ 
+
+const saveAutocomplete = async (req, res) => {
+  try {
+    const incoming = req.body?.autocomplete;
+    if (!incoming || typeof incoming !== 'object') {
+      return res.status(400).json({ success: false, message: 'Missing autocomplete payload' });
+    }
+ 
+    const FIELDS = [
+      'outletName', 'outletAddress', 'contactPerson', 'contactNumber',
+      'machineType', 'machineModel', 'machineSerialNumber', 'maintenanceType',
+      'electricalSupply', 'powerFluctuation', 'userName',
+      'engineeringName', 'serviceEngineerName',
+    ];
+ 
+    // Fetch the existing document (or an empty object if it doesn't exist yet)
+    const existing = (await FormAutocomplete.findById('global'))?.toObject() || {};
+ 
+    const $set = { updatedAt: new Date() };
+ 
+    FIELDS.forEach(field => {
+      const incomingValues = Array.isArray(incoming[field]) ? incoming[field] : [];
+      const existingValues = Array.isArray(existing[field]) ? existing[field] : [];
+ 
+      // Merge: incoming first (newest), then existing, deduplicate, cap at 15
+      const merged = [...new Set([...incomingValues, ...existingValues])].slice(0, 15);
+      $set[field] = merged;
+    });
+ 
+    await FormAutocomplete.findByIdAndUpdate(
+      'global',
+      { $set },
+      { upsert: true, new: true }
+    );
+ 
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('saveAutocomplete error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+
+exports.getAutocomplete = getAutocomplete;
+exports.saveAutocomplete = saveAutocomplete;
+
 // ─── Helper: Generate PDF ──────────────────────────────────────────────────
 async function generatePDF(report) {
   return new Promise((resolve, reject) => {
@@ -742,72 +805,8 @@ async function generatePDF(report) {
 
 
        
-const FormAutocomplete = require('../models/FormAutocomplete');
+
  
-/**
- * GET /api/form-autocomplete
- * Returns the single autocomplete document for the form.
- */
-const getAutocomplete = async (req, res) => {
-  try {
-    let doc = await FormAutocomplete.findById('global');
-    if (!doc) {
-      doc = await FormAutocomplete.create({ _id: 'global' });
-    }
-    return res.json({ success: true, autocomplete: doc.toObject() });
-  } catch (err) {
-    console.error('getAutocomplete error:', err);
-    return res.status(500).json({ success: false, message: 'Server error' });
-  }
-};
- 
-/**
- * POST /api/form-autocomplete
- * Body: { autocomplete: { outletName: [...], contactPerson: [...], ... } }
- *
- * Merges new values into the existing arrays (max 15 per field, newest first,
- * no duplicates).  Uses findOneAndUpdate with upsert so it's safe on first run.
- */
-const saveAutocomplete = async (req, res) => {
-  try {
-    const incoming = req.body?.autocomplete;
-    if (!incoming || typeof incoming !== 'object') {
-      return res.status(400).json({ success: false, message: 'Missing autocomplete payload' });
-    }
- 
-    const FIELDS = [
-      'outletName', 'outletAddress', 'contactPerson', 'contactNumber',
-      'machineType', 'machineModel', 'machineSerialNumber', 'maintenanceType',
-      'electricalSupply', 'powerFluctuation', 'userName',
-      'engineeringName', 'serviceEngineerName',
-    ];
- 
-    // Fetch the existing document (or an empty object if it doesn't exist yet)
-    const existing = (await FormAutocomplete.findById('global'))?.toObject() || {};
- 
-    const $set = { updatedAt: new Date() };
- 
-    FIELDS.forEach(field => {
-      const incomingValues = Array.isArray(incoming[field]) ? incoming[field] : [];
-      const existingValues = Array.isArray(existing[field]) ? existing[field] : [];
- 
-      // Merge: incoming first (newest), then existing, deduplicate, cap at 15
-      const merged = [...new Set([...incomingValues, ...existingValues])].slice(0, 15);
-      $set[field] = merged;
-    });
- 
-    await FormAutocomplete.findByIdAndUpdate(
-      'global',
-      { $set },
-      { upsert: true, new: true }
-    );
- 
-    return res.json({ success: true });
-  } catch (err) {
-    console.error('saveAutocomplete error:', err);
-    return res.status(500).json({ success: false, message: 'Server error' });
-  }
-};
 
       // Remarks
       doc.addPage();
@@ -856,3 +855,6 @@ const saveAutocomplete = async (req, res) => {
     }
   });
 }
+
+
+

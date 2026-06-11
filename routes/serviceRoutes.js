@@ -69,6 +69,8 @@ router.post('/api/service-reports',
   serviceController.createReport
 );
 
+
+
 router.get('/api/service-reports', serviceController.getAllReports);
 router.get('/api/service-reports/:id', serviceController.getReportById);
 
