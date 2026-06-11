@@ -1,43 +1,3 @@
-// const express = require('express');
-// const router = express.Router();
-// const multer = require('multer');
-// const path = require('path');
-// const serviceController = require('../controllers/serviceController');
-
-// // Configure multer for file uploads
-// const storage = multer.diskStorage({
-//   destination: (req, file, cb) => {
-//     cb(null, 'uploads/');
-//   },
-//   filename: (req, file, cb) => {
-//     cb(null, Date.now() + '-' + file.originalname);
-//   }
-// });
-
-// const upload = multer({ 
-//   storage: storage,
-//   fileFilter: (req, file, cb) => {
-//     const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-//     if (allowedMimes.includes(file.mimetype)) {
-//       cb(null, true);
-//     } else {
-//       cb(new Error('Only image files are allowed'));
-//     }
-//   }
-// });
-
-// // Routes
-// router.post('/api/service-reports', upload.array('images', 10), serviceController.createReport);
-// router.get('/api/service-reports', serviceController.getAllReports);
-// router.get('/api/service-reports/:id', serviceController.getReportById);
-// router.put('/api/service-reports/:id', upload.array('images', 10), serviceController.updateReport);
-// router.delete('/api/service-reports/:id', serviceController.deleteReport);
-// router.get('/api/service-reports/download/:id', serviceController.downloadPDF);
-
-// module.exports = router;
-
-
-
 
 const express = require('express');
 const router = express.Router();
@@ -139,6 +99,10 @@ router.post('/api/service-reports/:id/generate-engineer-share-link', serviceCont
 router.get('/api/engineer-sign/:token', serviceController.getReportByEngineerToken);
 router.post('/api/engineer-sign/:token', serviceController.submitEngineerSignature);
 
+// Dual share routes
+router.post('/api/service-reports/:id/generate-dual-share-link', serviceController.generateDualShareLink);
+router.get('/api/dual-sign/:token', serviceController.getReportByDualToken);
+router.post('/api/dual-sign/:token', serviceController.submitDualSignature);
 
 
 module.exports = router;
