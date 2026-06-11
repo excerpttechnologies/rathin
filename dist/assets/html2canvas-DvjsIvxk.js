@@ -1,8 +1,4 @@
-<<<<<<<< HEAD:dist/assets/html2canvas-CpevXBoj.js
-import{n as e}from"./index-B1psgnCT.js";var t=e(((e,t)=>{
-========
-import{n as e}from"./index-BO_pMh0R.js";var t=e(((e,t)=>{
->>>>>>>> 0643d87cbb775b1dc5b25f8f3d8997f2a6451341:dist/assets/html2canvas-Bxsxojnu.js
+import{n as e}from"./index-CDjz0t9t.js";var t=e(((e,t)=>{
 /*!
 * html2canvas 1.4.1 <https://html2canvas.hertzen.com>
 * Copyright (c) 2022 Niklas von Hertzen <https://hertzen.com>

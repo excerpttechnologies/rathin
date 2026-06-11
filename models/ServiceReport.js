@@ -105,10 +105,14 @@ engineerSignedAt:    { type: Date },
 
 
 
+<<<<<<< HEAD
 // Combined / dual signature share
 dualShareToken:  { type: String, unique: true, sparse: true },
 dualShareStatus: { type: String, enum: ['pending', 'customer_signed', 'engineer_signed', 'both_signed'], default: 'pending' },
 dualSharedAt:    { type: Date },
+=======
+
+>>>>>>> 0643d87cbb775b1dc5b25f8f3d8997f2a6451341
   
   // PDF File Path
   filePath: { type: String },
