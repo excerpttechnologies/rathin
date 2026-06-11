@@ -104,5 +104,7 @@ router.post('/api/service-reports/:id/generate-dual-share-link', serviceControll
 router.get('/api/dual-sign/:token', serviceController.getReportByDualToken);
 router.post('/api/dual-sign/:token', serviceController.submitDualSignature);
 
+router.get('/api/form-autocomplete',  serviceController.getAutocomplete);
+router.post('/api/form-autocomplete', serviceController.saveAutocomplete);
 
 module.exports = router;
