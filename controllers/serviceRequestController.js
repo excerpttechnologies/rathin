@@ -24,7 +24,6 @@
 //     }
 //     console.log("📩 Incoming Body:", req.body);
 
-
 //     const serviceRequest = new ServiceRequest({
 //       serviceType,
 //       priority,
@@ -187,19 +186,7 @@
 //   }
 // };
 
-
-
-
-
-
-
-
-
-
-
-
-
-const ServiceRequest = require('../models/ServiceRequest');
+const ServiceRequest = require("../models/ServiceRequest");
 
 // Create new service request
 exports.createServiceRequest = async (req, res) => {
@@ -214,30 +201,37 @@ exports.createServiceRequest = async (req, res) => {
       customerId,
       customerName,
       customerEmail,
-      complaintImages = []
+      complaintImages = [],
     } = req.body;
 
     // Validate required fields
-    if (!serviceType || !description || !address || !customerId || !customerName || !customerEmail) {
+    if (
+      !serviceType ||
+      !description ||
+      !address ||
+      !customerId ||
+      !customerName ||
+      !customerEmail
+    ) {
       return res.status(400).json({
         success: false,
-        message: 'All required fields must be provided'
+        message: "All required fields must be provided",
       });
     }
-    console.log("📩 Incoming Body:", req.body);
+    // console.log("📩 Incoming Body:", req.body);
 
     const serviceRequest = new ServiceRequest({
       serviceType,
-      priority: priority || 'medium',
+      priority: priority || "medium",
       description,
       address,
       preferredDate: preferredDate || null,
-      preferredTime: preferredTime || '',
+      preferredTime: preferredTime || "",
       customerId,
       customerName,
       customerEmail,
       complaintImages,
-      status: 'pending'
+      status: "pending",
     });
 
     await serviceRequest.save();
@@ -256,14 +250,13 @@ exports.createServiceRequest = async (req, res) => {
       customerName: serviceRequest.customerName,
       customerEmail: serviceRequest.customerEmail,
       complaintImages: serviceRequest.complaintImages,
-      createdAt: serviceRequest.createdAt
+      createdAt: serviceRequest.createdAt,
     });
-
   } catch (error) {
-    console.error('Error creating service request:', error);
+    console.error("Error creating service request:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error while creating service request'
+      message: "Server error while creating service request",
     });
   }
 };
@@ -279,7 +272,7 @@ exports.getCustomerServiceRequests = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const formattedRequests = serviceRequests.map(request => ({
+    const formattedRequests = serviceRequests.map((request) => ({
       _id: request._id,
       id: request._id.toString(),
       serviceType: request.serviceType,
@@ -293,16 +286,15 @@ exports.getCustomerServiceRequests = async (req, res) => {
       customerName: request.customerName,
       customerEmail: request.customerEmail,
       complaintImages: request.complaintImages,
-      createdAt: request.createdAt
+      createdAt: request.createdAt,
     }));
 
     res.json(formattedRequests);
-
   } catch (error) {
-    console.error('Error fetching service requests:', error);
+    console.error("Error fetching service requests:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error while fetching service requests'
+      message: "Server error while fetching service requests",
     });
   }
 };
@@ -314,7 +306,7 @@ exports.getAllServiceRequests = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const formattedRequests = serviceRequests.map(request => ({
+    const formattedRequests = serviceRequests.map((request) => ({
       _id: request._id,
       id: request._id.toString(),
       serviceType: request.serviceType,
@@ -330,16 +322,15 @@ exports.getAllServiceRequests = async (req, res) => {
       complaintImages: request.complaintImages,
       createdAt: request.createdAt,
       assignedTo: request.assignedTo,
-      notes: request.notes
+      notes: request.notes,
     }));
 
     res.json(formattedRequests);
-
   } catch (error) {
-    console.error('Error fetching service requests:', error);
+    console.error("Error fetching service requests:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error while fetching service requests'
+      message: "Server error while fetching service requests",
     });
   }
 };
@@ -355,21 +346,21 @@ exports.updateServiceRequestStatus = async (req, res) => {
       {
         status,
         ...(notes && { notes }),
-        ...(assignedTo && { assignedTo })
+        ...(assignedTo && { assignedTo }),
       },
-      { new: true }
+      { new: true },
     );
 
     if (!serviceRequest) {
       return res.status(404).json({
         success: false,
-        message: 'Service request not found'
+        message: "Service request not found",
       });
     }
 
     res.json({
       success: true,
-      message: 'Service request updated successfully',
+      message: "Service request updated successfully",
       serviceRequest: {
         _id: serviceRequest._id,
         id: serviceRequest._id.toString(),
@@ -384,15 +375,14 @@ exports.updateServiceRequestStatus = async (req, res) => {
         customerName: serviceRequest.customerName,
         customerEmail: serviceRequest.customerEmail,
         complaintImages: serviceRequest.complaintImages,
-        createdAt: serviceRequest.createdAt
-      }
+        createdAt: serviceRequest.createdAt,
+      },
     });
-
   } catch (error) {
-    console.error('Error updating service request:', error);
+    console.error("Error updating service request:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error while updating service request'
+      message: "Server error while updating service request",
     });
   }
 };
