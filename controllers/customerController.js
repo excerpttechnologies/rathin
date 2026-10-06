@@ -40,7 +40,7 @@ exports.createCustomer = async (req, res) => {
 // Get all customers
 exports.getAllCustomers = async (req, res) => {
   try {
-    const customers = await Customer.find().sort({ createdAt: -1 });
+    const customers = await Customer.find().sort({ createdAt: -1 }).lean();
     
     const formattedCustomers = customers.map(customer => ({
       id: customer._id,

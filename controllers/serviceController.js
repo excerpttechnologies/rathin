@@ -4,122 +4,156 @@ const FormAutocomplete = require('../models/FormAutocomplete');
 const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
+
+// ─── Shared helpers ────────────────────────────────────────────────────────
+// Multipart form fields always arrive as strings, so `undefined`/`null` values
+// reach us as the literal text. Strip those so they are never stored.
+const text = (value) => {
+  if (value === undefined || value === null) return '';
+  const str = String(value).trim();
+  return (str === 'undefined' || str === 'null') ? '' : str;
+};
+
+const toDate = (value) => {
+  const str = text(value);
+  if (!str) return null;
+  const parsed = new Date(str);
+  return isNaN(parsed.valueOf()) ? null : parsed;
+};
+
+const toArray = (value) => {
+  let list = [];
+  if (Array.isArray(value)) list = value;
+  else if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      list = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (err) {
+      list = [value];
+    }
+  }
+  return list.map(item => text(item)).filter(Boolean);
+};
+
+// Images are served as `<host>/<path>`, so the stored path has to stay
+// relative to the backend root with forward slashes, whatever the OS or the
+// working directory the process was started from.
+const toStoredImage = (file, type) => ({
+  filename: file.filename,
+  path: `uploads/${file.filename}`,
+  mimetype: file.mimetype,
+  type
+});
+
+const collectImages = (files, field, type) =>
+  (files && files[field] ? files[field] : []).map(file => toStoredImage(file, type));
+
+const isDuplicateSlNo = (error) =>
+  !!error && error.code === 11000 &&
+  JSON.stringify(error.keyPattern || error.keyValue || {}).includes('slNo');
+
+// A duplicate slNo must never cost the engineer their report: the model
+// resyncs the counter on each attempt, so a retry picks a free number.
+const saveWithUniqueSlNo = async (doc, attempts = 5) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await doc.save();
+    } catch (error) {
+      if (!isDuplicateSlNo(error) || attempt >= attempts) throw error;
+      console.warn(`Duplicate SL No on attempt ${attempt}, resyncing the counter and retrying`);
+      // The counter had drifted behind the stored data; put it back in step so
+      // the retry (and every save after it) gets a free number first time.
+      await ServiceReport.resyncSlNoCounter().catch(err =>
+        console.error('Could not resync the slNo counter:', err));
+    }
+  }
+};
+
+// ─── Cache for the read-heavy list endpoints ───────────────────────────────
+// The billing list, the outlet selector and the SL No poll keep asking the
+// same questions, and each one costs a round trip to a database that may be
+// on another continent. Answers are held briefly in memory and thrown away
+// the instant anything is written, so a page load is usually served without
+// touching the database and can still never show a list that is out of date
+// after a save, an edit, a delete or a signature.
+const listCache = new Map();
+const LIST_CACHE_TTL_MS = 20000;
+
+const cacheGet = (key) => {
+  const hit = listCache.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expires) {
+    listCache.delete(key);
+    return null;
+  }
+  return hit.value;
+};
+
+const cacheSet = (key, value) => {
+  listCache.set(key, { value, expires: Date.now() + LIST_CACHE_TTL_MS });
+  return value;
+};
+
+const invalidateListCache = () => {
+  if (listCache.size) console.log('List cache cleared (' + listCache.size + ' entries)');
+  listCache.clear();
+};
+
+// 'no-cache' lets the browser keep its copy but still check in: when nothing
+// has changed Express answers 304 with no body at all, on its own ETag.
+const sendList = (res, payload) => {
+  res.set('Cache-Control', 'no-cache');
+  res.status(200).json(payload);
+};
+
+const DATE_FIELDS = [
+  'date', 'billDate', 'complaintDate', 'installationDate',
+  'userDate', 'engineeringDate', 'serviceEngineerDate'
+];
+
+const TEXT_FIELDS = [
+  'billNo', 'maintenanceType', 'outletName', 'outletAddress', 'contactPerson',
+  'contactNumber', 'machineType', 'machineModel', 'machineSerialNumber',
+  'waterInputTDS', 'waterPressure', 'waterSource', 'electricalSupply',
+  'powerFluctuation', 'customerComplaint', 'actualFault', 'actionTaken',
+  'serviceRemarks', 'customerRemarks', 'userName', 'userSignature',
+  'engineeringName', 'engineeringSignature', 'serviceEngineerName',
+  'selectedServiceSignatureType', 'selectedServiceSignatureUrl',
+  'selectedServiceSignatureId'
+];
 const crypto = require('crypto');
 
 // ─── Create Service Report ─────────────────────────────────────────────────
 exports.createReport = async (req, res) => {
   try {
     console.log('Incoming request body keys:', Object.keys(req.body));
-    console.log('Files received:', req.files);
+    console.log('Files received:', req.files && Object.keys(req.files));
 
-    const {
-      slNo, date, billDate, billNo, maintenanceType, outletName, outletAddress,
-      contactPerson, contactNumber, machineType, machineModel, machineSerialNumber,
-      complaintDate, installationDate, waterInputTDS, waterPressure, waterSource,
-      electricalSupply, powerFluctuation, customerComplaint, actualFault, actionTaken,
-      spareParts, equipments, serviceRemarks, customerRemarks, userName, userDate,
-      userSignature, engineeringName, engineeringDate, engineeringSignature,
-      serviceEngineerName, serviceEngineerDate,
-      selectedServiceSignatureType, selectedServiceSignatureUrl, selectedServiceSignatureId
-    } = req.body;
+    const beforeServiceImages = collectImages(req.files, 'beforeServiceImages', 'before');
+    const afterServiceImages  = collectImages(req.files, 'afterServiceImages',  'after');
+    console.log('Images processed — before:', beforeServiceImages.length, 'after:', afterServiceImages.length);
 
-    // Parse arrays
-    let parsedSpareParts = [];
-    let parsedEquipments = [];
-
-    try {
-      parsedSpareParts = typeof spareParts === 'string' ? JSON.parse(spareParts) : (Array.isArray(spareParts) ? spareParts : []);
-      parsedEquipments = typeof equipments === 'string' ? JSON.parse(equipments) : (Array.isArray(equipments) ? equipments : []);
-    } catch (parseError) {
-      console.log('Array parsing error, using defaults:', parseError.message);
-      parsedSpareParts = [];
-      parsedEquipments = [];
-    }
-
-    parsedSpareParts = parsedSpareParts.filter(p => p && String(p).trim());
-    parsedEquipments = parsedEquipments.filter(e => e && String(e).trim());
-
-    // Process uploaded images
-    let beforeServiceImages = [];
-    let afterServiceImages = [];
-
-    if (req.files) {
-      if (req.files.beforeServiceImages) {
-        beforeServiceImages = req.files.beforeServiceImages.map(file => ({
-          filename: file.filename,
-          path: file.path,
-          mimetype: file.mimetype,
-          type: 'before'
-        }));
-        console.log('Before service images processed:', beforeServiceImages.length);
-      }
-
-      if (req.files.afterServiceImages) {
-        afterServiceImages = req.files.afterServiceImages.map(file => ({
-          filename: file.filename,
-          path: file.path,
-          mimetype: file.mimetype,
-          type: 'after'
-        }));
-        console.log('After service images processed:', afterServiceImages.length);
-      }
-    }
-
-    console.log('Creating report with SL No:', slNo);
-    console.log('Selected service signature type:', selectedServiceSignatureType);
-
-    const newReport = new ServiceReport({
-      slNo: parseInt(slNo) || 1,
-      date: date ? new Date(date) : new Date(),
-      billDate: billDate ? new Date(billDate) : null,
-      billNo: billNo || '',
-      maintenanceType: maintenanceType || '',
-      outletName: outletName || '',
-      outletAddress: outletAddress || '',
-      contactPerson: contactPerson || '',
-      contactNumber: contactNumber || '',
-      machineType: machineType || '',
-      machineModel: machineModel || '',
-      machineSerialNumber: machineSerialNumber || '',
-      complaintDate: complaintDate ? new Date(complaintDate) : null,
-      installationDate: installationDate ? new Date(installationDate) : null,
-      waterInputTDS: waterInputTDS || '',
-      waterPressure: waterPressure || '',
-      waterSource: waterSource || '',
-      electricalSupply: electricalSupply || '',
-      powerFluctuation: powerFluctuation || '',
-      customerComplaint: customerComplaint || '',
-      actualFault: actualFault || '',
-      actionTaken: actionTaken || '',
-      spareParts: parsedSpareParts,
-      equipments: parsedEquipments,
-      serviceRemarks: serviceRemarks || '',
-      customerRemarks: customerRemarks || '',
-      userName: userName || '',
-      userDate: userDate ? new Date(userDate) : null,
-      userSignature: userSignature || null,
-      engineeringName: engineeringName || '',
-      engineeringDate: engineeringDate ? new Date(engineeringDate) : null,
-      engineeringSignature: engineeringSignature || null,
-      serviceEngineerName: serviceEngineerName || '',
-      serviceEngineerDate: serviceEngineerDate ? new Date(serviceEngineerDate) : null,
-      selectedServiceSignatureType: selectedServiceSignatureType || null,
-      selectedServiceSignatureUrl: selectedServiceSignatureUrl || null,
-      selectedServiceSignatureId: selectedServiceSignatureId || null,
+    const payload = {
+      // slNo is assigned by the model's counter so two engineers saving at the
+      // same moment can never land on the same number.
+      spareParts: toArray(req.body.spareParts),
+      equipments: toArray(req.body.equipments),
       beforeServiceImages,
       afterServiceImages
-    });
+    };
 
-    await newReport.save();
+    TEXT_FIELDS.forEach(field => { payload[field] = text(req.body[field]); });
+    DATE_FIELDS.forEach(field => { payload[field] = toDate(req.body[field]); });
+    // `date` is required by the schema — fall back to today rather than failing.
+    if (!payload.date) payload.date = new Date();
 
-    try {
-      await generatePDF(newReport);
-      console.log('PDF generated successfully for report:', newReport._id);
-    } catch (pdfError) {
-      console.error('Error generating PDF:', pdfError);
-    }
+    console.log('Selected service signature type:', payload.selectedServiceSignatureType || '(none)');
 
-    console.log('Report saved successfully with ID:', newReport._id);
+    const newReport = new ServiceReport(payload);
+    await saveWithUniqueSlNo(newReport);
+    invalidateListCache();
+
+    console.log('Report saved successfully with ID:', newReport._id, 'SL No:', newReport.slNo);
 
     res.status(201).json({
       success: true,
@@ -133,22 +167,113 @@ exports.createReport = async (req, res) => {
 
     res.status(500).json({
       success: false,
-      message: 'Error creating service report',
+      message: isDuplicateSlNo(error)
+        ? 'Could not allocate a free SL No. Please try saving again.'
+        : 'Error creating service report',
       error: error.message,
       details: error.errors ? Object.values(error.errors).map(e => e.message) : []
     });
   }
 };
 
+// ─── Next SL No ────────────────────────────────────────────────────────────
+// The form polls for the number the next report will get. It used to pull
+// every report, with every stored signature, to work that out.
+exports.getNextSlNo = async (req, res) => {
+  try {
+    const cached = cacheGet('next-slno');
+    if (cached) return sendList(res, cached);
+
+    const highest = await ServiceReport.highestSlNo();
+    sendList(res, cacheSet('next-slno', { success: true, nextSlNo: highest + 1 }));
+  } catch (error) {
+    console.error('Error reading next SL No:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error reading next SL No',
+      error: error.message
+    });
+  }
+};
+
+// ─── Outlet templates ──────────────────────────────────────────────────────
+// The form's outlet selector needs the most recent report for each outlet, to
+// prefill a new one. It used to download every report ever written and work
+// that out in the browser; the grouping belongs in the database, where it is
+// one indexed pass and a fraction of the bytes.
+exports.getOutletTemplates = async (req, res) => {
+  try {
+    const cached = cacheGet('outlets');
+    if (cached) return sendList(res, cached);
+
+    const outlets = await ServiceReport.aggregate([
+      { $match: { outletName: { $nin: [null, ''] } } },
+      { $sort: { createdAt: -1 } },
+      { $group: { _id: '$outletName', report: { $first: '$$ROOT' } } },
+      { $project: { _id: 0, outletName: '$_id', report: 1 } },
+      // Dropped in a separate stage: $project cannot mix renaming a field with
+      // excluding others. A previous report's signatures must never be carried
+      // into a new one, and they are the bulk of a document.
+      {
+        $unset: [
+          'report.userSignature',
+          'report.engineeringSignature',
+          'report.beforeServiceImages',
+          'report.afterServiceImages',
+          'report.shareToken',
+          'report.engineerShareToken',
+          'report.dualShareToken',
+        ],
+      },
+      { $sort: { outletName: 1 } },
+    ]);
+
+    sendList(res, cacheSet('outlets', {
+      success: true,
+      count: outlets.length,
+      data: outlets,
+    }));
+  } catch (error) {
+    console.error('Error building outlet templates:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error building outlet templates',
+      error: error.message,
+    });
+  }
+};
+
 // ─── Get All Reports ───────────────────────────────────────────────────────
+// Exactly what the billing cards and their search, type and outlet filters
+// read — nothing else. Everything a report page needs beyond this is fetched
+// per report, when one is actually opened.
+const LIST_FIELDS = [
+  '_id', 'slNo', 'date', 'billDate', 'billNo', 'maintenanceType',
+  'outletName', 'machineSerialNumber', 'shareStatus', 'engineerShareStatus',
+  'createdAt',
+].join(' ');
+
+// ?fields=list  → just the columns above (smallest)
+// ?summary=1    → everything except the drawn-signature data URLs, which
+//                 dominate the payload (used to prefill a new report)
+// no parameter  → the full documents, unchanged
 exports.getAllReports = async (req, res) => {
   try {
-    const reports = await ServiceReport.find().sort({ createdAt: -1 });
-    res.status(200).json({
+    const projection =
+      req.query.fields === 'list' ? LIST_FIELDS
+      : req.query.summary ? '-userSignature -engineeringSignature'
+      : null;
+
+    const cacheKey = `reports:${req.query.fields || ''}:${req.query.summary || ''}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return sendList(res, cached);
+
+    const reports = await ServiceReport.find({}, projection).sort({ createdAt: -1 }).lean();
+    sendList(res, cacheSet(cacheKey, {
       success: true,
       count: reports.length,
       data: reports
-    });
+    }));
   } catch (error) {
     console.error('Error fetching reports:', error);
     res.status(500).json({
@@ -194,38 +319,43 @@ exports.updateReport = async (req, res) => {
       });
     }
 
-    Object.assign(report, req.body);
+    // Only copy the fields the form owns. A blanket Object.assign(report,
+    // req.body) wrote the raw multipart strings over typed paths (turning the
+    // spare-parts array into one JSON string) and let a request overwrite
+    // internals such as share tokens, _id or createdAt.
+    TEXT_FIELDS.forEach(field => {
+      if (req.body[field] !== undefined) report[field] = text(req.body[field]);
+    });
+    DATE_FIELDS.forEach(field => {
+      if (req.body[field] !== undefined) report[field] = toDate(req.body[field]);
+    });
+    if (req.body.spareParts !== undefined) report.spareParts = toArray(req.body.spareParts);
+    if (req.body.equipments !== undefined) report.equipments = toArray(req.body.equipments);
 
-    if (req.files) {
-      if (req.files.beforeServiceImages) {
-        const newBeforeImages = req.files.beforeServiceImages.map(file => ({
-          filename: file.filename,
-          path: file.path,
-          mimetype: file.mimetype,
-          type: 'before'
-        }));
-        report.beforeServiceImages = [...report.beforeServiceImages, ...newBeforeImages];
+    // A changed SL No is honoured only when it is still free, so an edit can
+    // never fail on the unique index.
+    if (req.body.slNo !== undefined) {
+      const slNo = parseInt(req.body.slNo, 10);
+      if (!isNaN(slNo) && slNo !== report.slNo) {
+        const taken = await ServiceReport.exists({ slNo, _id: { $ne: report._id } });
+        if (taken) console.warn(`SL No ${slNo} already in use; keeping ${report.slNo}`);
+        else report.slNo = slNo;
       }
+    }
 
-      if (req.files.afterServiceImages) {
-        const newAfterImages = req.files.afterServiceImages.map(file => ({
-          filename: file.filename,
-          path: file.path,
-          mimetype: file.mimetype,
-          type: 'after'
-        }));
-        report.afterServiceImages = [...report.afterServiceImages, ...newAfterImages];
-      }
+    const newBeforeImages = collectImages(req.files, 'beforeServiceImages', 'before');
+    const newAfterImages  = collectImages(req.files, 'afterServiceImages',  'after');
+    if (newBeforeImages.length) {
+      report.beforeServiceImages = [...(report.beforeServiceImages || []), ...newBeforeImages];
+    }
+    if (newAfterImages.length) {
+      report.afterServiceImages = [...(report.afterServiceImages || []), ...newAfterImages];
     }
 
     report.updatedAt = new Date();
+    dropStoredPDF(report);   // rebuilt on demand by the download route
     await report.save();
-
-    try {
-      await generatePDF(report);
-    } catch (pdfError) {
-      console.error('Error regenerating PDF:', pdfError);
-    }
+    invalidateListCache();
 
     res.status(200).json({
       success: true,
@@ -280,6 +410,7 @@ exports.deleteReport = async (req, res) => {
     }
 
     await ServiceReport.findByIdAndDelete(req.params.id);
+    invalidateListCache();
 
     res.status(200).json({
       success: true,
@@ -467,13 +598,9 @@ exports.submitEngineerSignature = async (req, res) => {
     report.engineerShareStatus  = 'signed';
     report.engineerSignedAt     = new Date();
 
+    dropStoredPDF(report);   // rebuilt on demand by the download route
     await report.save();
-
-    try {
-      await generatePDF(report);
-    } catch (pdfError) {
-      console.error('PDF regeneration failed (non-fatal):', pdfError.message);
-    }
+    invalidateListCache();
 
     res.status(200).json({
       success: true,
@@ -521,15 +648,9 @@ exports.submitCustomerSignature = async (req, res) => {
     report.shareStatus      = 'signed';
     report.customerSignedAt = new Date();
 
+    dropStoredPDF(report);   // rebuilt on demand by the download route
     await report.save();
-
-    // Auto-generate final PDF after customer signs
-    try {
-      await generatePDF(report);
-      console.log('Final PDF generated after customer signature for report:', report._id);
-    } catch (pdfError) {
-      console.error('PDF generation failed (non-fatal):', pdfError.message);
-    }
+    invalidateListCache();
 
     res.status(200).json({
       success: true,
@@ -603,6 +724,7 @@ exports.submitDualSignature = async (req, res) => {
     }
 
     await report.save();
+    invalidateListCache();
     res.json({ success: true, status: report.dualShareStatus });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -672,6 +794,25 @@ exports.getAutocomplete = getAutocomplete;
 exports.saveAutocomplete = saveAutocomplete;
 
 // ─── Helper: Generate PDF ──────────────────────────────────────────────────
+// Drops the stored PDF instead of rebuilding it.
+//
+// That file is only ever read by the download route, which regenerates it
+// when it is missing. Rebuilding it on every save and every signature ran
+// pdfkit — which decodes and re-deflates each embedded image — on the single
+// thread that also answers every other request, so one save with photos made
+// the whole site crawl for several seconds. Clearing the path costs nothing
+// and the next download rebuilds an up-to-date copy.
+//
+// Call this BEFORE the report.save() that follows it, so the cleared path is
+// persisted by that same write and no extra round trip is needed.
+function dropStoredPDF(report) {
+  const stale = report.filePath;
+  report.filePath = undefined;
+  if (!stale) return;
+  // Unlinked asynchronously: the request never waits on the disk.
+  fs.unlink(path.join(__dirname, '..', stale), () => {});
+}
+
 async function generatePDF(report) {
   return new Promise((resolve, reject) => {
     try {

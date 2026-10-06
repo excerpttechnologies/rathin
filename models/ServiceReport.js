@@ -124,51 +124,79 @@ dualSharedAt:    { type: Date },
 
 
 
+// The billing list always sorts by newest first.
+serviceReportSchema.index({ createdAt: -1 });
+
+// ─── SL No allocation ──────────────────────────────────────────────────────
+// The counter document can drift out of sync with the reports it numbers:
+// reports imported or removed directly in the DB, a counter created after data
+// already existed, or the old delete hook decrementing past the real maximum.
+// When that happens the counter hands back an slNo that is already taken and,
+// because slNo carries a unique index, EVERY new report fails to save with a
+// duplicate-key error. nextSlNo() heals the counter whenever it has fallen
+// behind the highest stored slNo, so a stale counter can never block saving.
+async function highestSlNo() {
+  const latest = await mongoose.model('ServiceReport')
+    .findOne({ slNo: { $ne: null } })
+    .sort({ slNo: -1 })
+    .select('slNo')
+    .lean();
+  return latest && typeof latest.slNo === 'number' ? latest.slNo : 0;
+}
+
+// One round trip on the normal path. Checking the data for drift on every
+// save cost an extra query per report; instead the caller resyncs and retries
+// if the number it got turns out to be taken.
+async function nextSlNo() {
+  const counter = await Counter.findByIdAndUpdate(
+    'slNo',
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return counter.seq;
+}
+
+// Point the counter back at the data. Called after a duplicate slNo, so the
+// next attempt gets a free number.
+async function resyncSlNoCounter() {
+  const maxSlNo = await highestSlNo();
+  const healed = await Counter.findByIdAndUpdate(
+    'slNo',
+    { $set: { seq: maxSlNo + 1 } },
+    { new: true, upsert: true }
+  );
+  console.log(`slNo counter resynced to ${healed.seq} (highest stored: ${maxSlNo})`);
+  return healed.seq;
+}
+
+serviceReportSchema.statics.nextSlNo          = nextSlNo;
+serviceReportSchema.statics.highestSlNo       = highestSlNo;
+serviceReportSchema.statics.resyncSlNoCounter = resyncSlNoCounter;
+
 // Auto-increment hook (for saving)
-serviceReportSchema.pre('save', async function(next) {
-  if (this.isNew) {
-    try {
-      const counter = await Counter.findByIdAndUpdate(
-        'slNo',
-        { $inc: { seq: 1 } },
-        { new: true, upsert: true }
-      );
-      this.slNo = counter.seq;
-    } catch (error) {
-      console.error('Error incrementing slNo:', error);
-      next(error);
-    }
+serviceReportSchema.pre('save', async function (next) {
+  if (!this.isNew) return next();
+  try {
+    this.slNo = await nextSlNo();
+    return next();
+  } catch (error) {
+    console.error('Error allocating slNo:', error);
+    return next(error);
   }
-  next();
 });
 
-
-
-
-
-
-// ✅ NEW: Auto-decrement hook (when deleted)
+// Keep the counter in step with the data after a delete: resync it to the
+// highest slNo still stored instead of blindly decrementing (a blind decrement
+// drops the counter below the real maximum and causes duplicates later on).
 serviceReportSchema.post('findOneAndDelete', async function (doc) {
   try {
-    if (doc && doc.slNo) {
-      // Find highest slNo after deletion
-      const latest = await mongoose.model('ServiceReport').findOne().sort({ slNo: -1 });
-
-      // If deleted document had the highest slNo, decrement counter
-      if (!latest || doc.slNo > latest.slNo) {
-        await Counter.findByIdAndUpdate('slNo', { $inc: { seq: -1 } });
-        console.log(`Counter decremented after deleting SL No: ${doc.slNo}`);
-      }
-    }
+    if (!doc || !doc.slNo) return;
+    const maxSlNo = await highestSlNo();
+    await Counter.findByIdAndUpdate('slNo', { $set: { seq: maxSlNo } }, { upsert: true });
+    console.log(`Counter resynced to ${maxSlNo} after deleting SL No: ${doc.slNo}`);
   } catch (error) {
-    console.error('Error decrementing counter after delete:', error);
+    console.error('Error resyncing counter after delete:', error);
   }
 });
-
-
-
-
-
-
 
 module.exports = mongoose.model('ServiceReport', serviceReportSchema);

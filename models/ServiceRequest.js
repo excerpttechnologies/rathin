@@ -133,4 +133,8 @@ const serviceRequestSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// The two list screens read by customer, and by newest first.
+serviceRequestSchema.index({ customerId: 1, createdAt: -1 });
+serviceRequestSchema.index({ createdAt: -1 });
+
 module.exports = mongoose.model('ServiceRequest', serviceRequestSchema);

@@ -15,7 +15,10 @@ if (!fs.existsSync(uploadsDir)) {
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'uploads/');
+    // Absolute: a relative 'uploads/' resolves against the process working
+    // directory, so uploads failed with ENOENT whenever the server was started
+    // from anywhere other than this folder.
+    cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -29,9 +32,17 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024 // 10MB limit per file
   },
   fileFilter: (req, file, cb) => {
-    console.log('Processing file:', file.fieldname, file.originalname);
-    const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
-    if (allowedMimes.includes(file.mimetype)) {
+    console.log('Processing file:', file.fieldname, file.originalname, file.mimetype);
+    // Phone cameras send heic/heif and some browsers send a generic type for a
+    // perfectly valid picture, so fall back to the file extension before
+    // rejecting an upload and failing the whole save.
+    const allowedMimes = [
+      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+      'image/avif', 'image/heic', 'image/heif', 'image/bmp', 'image/tiff',
+      'image/jfif', 'image/pjpeg', 'image/svg+xml'
+    ];
+    const allowedExt = /\.(jpe?g|jfif|png|gif|webp|avif|heic|heif|bmp|tiff?|svg)$/i;
+    if (allowedMimes.includes((file.mimetype || '').toLowerCase()) || allowedExt.test(file.originalname || '')) {
       cb(null, true);
     } else {
       cb(new Error(`Invalid file type: ${file.mimetype}. Only images are allowed.`));
@@ -52,7 +63,7 @@ const handleMulterError = (err, req, res, next) => {
     console.error('Upload error:', err);
     return res.status(400).json({
       success: false,
-      message: 'Internal server error',
+      message: `Image upload failed: ${err.message}`,
       error: err.message
     });
   }
@@ -62,8 +73,8 @@ const handleMulterError = (err, req, res, next) => {
 // Routes
 router.post('/api/service-reports', 
   upload.fields([
-    { name: 'beforeServiceImages', maxCount: 10 },
-    { name: 'afterServiceImages', maxCount: 10 }
+    { name: 'beforeServiceImages', maxCount: 20 },
+    { name: 'afterServiceImages', maxCount: 20 }
   ]),
   handleMulterError,
   serviceController.createReport
@@ -72,12 +83,15 @@ router.post('/api/service-reports',
 
 
 router.get('/api/service-reports', serviceController.getAllReports);
+// Must stay above '/:id' or they would be read as a report id.
+router.get('/api/service-reports/next-slno', serviceController.getNextSlNo);
+router.get('/api/service-reports/outlets',   serviceController.getOutletTemplates);
 router.get('/api/service-reports/:id', serviceController.getReportById);
 
 router.put('/api/service-reports/:id', 
   upload.fields([
-    { name: 'beforeServiceImages', maxCount: 10 },
-    { name: 'afterServiceImages', maxCount: 10 }
+    { name: 'beforeServiceImages', maxCount: 20 },
+    { name: 'afterServiceImages', maxCount: 20 }
   ]),
   handleMulterError,
   serviceController.updateReport

@@ -273,8 +273,11 @@ exports.getCustomerServiceRequests = async (req, res) => {
   try {
     const { customerId } = req.params;
 
+    // .lean() returns plain objects: these handlers only read and reshape
+    // the rows, so building full Mongoose documents was wasted work.
     const serviceRequests = await ServiceRequest.find({ customerId })
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     const formattedRequests = serviceRequests.map(request => ({
       _id: request._id,
@@ -308,7 +311,8 @@ exports.getCustomerServiceRequests = async (req, res) => {
 exports.getAllServiceRequests = async (req, res) => {
   try {
     const serviceRequests = await ServiceRequest.find()
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     const formattedRequests = serviceRequests.map(request => ({
       _id: request._id,
