@@ -309,7 +309,7 @@ exports.getOutletTemplates = async (req, res) => {
 // Exactly what the billing cards and their search, type and outlet filters
 // read — nothing else. Everything a report page needs beyond this is fetched
 // per report, when one is actually opened.
-const LIST_FIELDS = [
+const LIST_FIELD_NAMES = [
   "_id",
   "slNo",
   "date",
@@ -321,7 +321,42 @@ const LIST_FIELDS = [
   "shareStatus",
   "engineerShareStatus",
   "createdAt",
-].join(" ");
+];
+const LIST_PROJECTION = Object.fromEntries(
+  LIST_FIELD_NAMES.map((f) => [f, 1]),
+);
+
+// shareStatus only ever says whether a share link came back signed. A
+// signature drawn straight into the form sets userSignature and leaves
+// shareStatus alone, so cards judging by shareStatus called a report with
+// both signatures on its PDF "awaiting both signatures". The drawn images
+// are far too big to put in a list, so the question is answered in the
+// database and only the answer is sent.
+const filled = (field) => ({
+  $and: [{ $ne: [field, null] }, { $ne: [field, ""] }],
+});
+const signedFlagsFromRow = (row) => {
+  const { userSignature, engineeringSignature, ...rest } = row;
+  const drawn = (v) => Boolean(String(v || "").trim());
+  return {
+    ...rest,
+    userSigned: rest.shareStatus === "signed" || drawn(userSignature),
+    engineerSigned:
+      rest.engineerShareStatus === "signed" || drawn(engineeringSignature),
+  };
+};
+
+const SIGNED_FLAGS = {
+  userSigned: {
+    $or: [{ $eq: ["$shareStatus", "signed"] }, filled("$userSignature")],
+  },
+  engineerSigned: {
+    $or: [
+      { $eq: ["$engineerShareStatus", "signed"] },
+      filled("$engineeringSignature"),
+    ],
+  },
+};
 
 // ?fields=list  → just the columns above (smallest)
 // ?summary=1    → everything except the drawn-signature data URLs, which
@@ -329,20 +364,42 @@ const LIST_FIELDS = [
 // no parameter  → the full documents, unchanged
 exports.getAllReports = async (req, res) => {
   try {
-    const projection =
-      req.query.fields === "list"
-        ? LIST_FIELDS
-        : req.query.summary
-          ? "-userSignature -engineeringSignature"
-          : null;
-
     const cacheKey = `reports:${req.query.fields || ""}:${req.query.summary || ""}`;
     const cached = cacheGet(cacheKey);
     if (cached) return sendList(res, cached);
 
-    const reports = await ServiceReport.find({}, projection)
-      .sort({ createdAt: -1 })
-      .lean();
+    const listRows = async () => {
+      try {
+        return await ServiceReport.aggregate([
+          { $sort: { createdAt: -1 } },
+          { $project: { ...LIST_PROJECTION, ...SIGNED_FLAGS } },
+        ]);
+      } catch (err) {
+        // The cards have to appear even if the pipeline is refused. Same
+        // answer, worked out here, at the cost of pulling the signature
+        // images this far only to drop them again.
+        console.error("List aggregation failed, falling back:", err.message);
+        const rows = await ServiceReport.find(
+          {},
+          LIST_FIELD_NAMES.join(" ") + " userSignature engineeringSignature",
+        )
+          .sort({ createdAt: -1 })
+          .lean();
+        return rows.map(signedFlagsFromRow);
+      }
+    };
+
+    const reports =
+      req.query.fields === "list"
+        ? await listRows()
+        : await ServiceReport.find(
+            {},
+            req.query.summary
+              ? "-userSignature -engineeringSignature"
+              : null,
+          )
+            .sort({ createdAt: -1 })
+            .lean();
     sendList(
       res,
       cacheSet(cacheKey, {
