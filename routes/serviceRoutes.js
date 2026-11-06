@@ -107,6 +107,8 @@ router.get('/api/service-reports/download/:id', serviceController.downloadPDF);
 router.post('/api/service-reports/:id/generate-share-link', serviceController.generateShareLink);
 router.get('/api/sign/:token', serviceController.getReportByToken);
 router.post('/api/sign/:token', serviceController.submitCustomerSignature);
+// Complete PDF of the same report, authorised by the share token.
+router.get('/api/sign/:token/pdf', serviceController.downloadCustomerPDF);
 
 
 
@@ -114,11 +116,13 @@ router.post('/api/sign/:token', serviceController.submitCustomerSignature);
 router.post('/api/service-reports/:id/generate-engineer-share-link', serviceController.generateEngineerShareLink);
 router.get('/api/engineer-sign/:token', serviceController.getReportByEngineerToken);
 router.post('/api/engineer-sign/:token', serviceController.submitEngineerSignature);
+router.get('/api/engineer-sign/:token/pdf', serviceController.downloadEngineerPDF);
 
 // Dual share routes
 router.post('/api/service-reports/:id/generate-dual-share-link', serviceController.generateDualShareLink);
 router.get('/api/dual-sign/:token', serviceController.getReportByDualToken);
 router.post('/api/dual-sign/:token', serviceController.submitDualSignature);
+router.get('/api/dual-sign/:token/pdf', serviceController.downloadDualPDF);
 
 router.get('/api/form-autocomplete',  serviceController.getAutocomplete);
 router.post('/api/form-autocomplete', serviceController.saveAutocomplete);

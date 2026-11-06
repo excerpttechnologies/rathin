@@ -581,6 +581,86 @@ exports.deleteReport = async (req, res) => {
   }
 };
 
+// ─── Serve a report PDF ────────────────────────────────────────────────────
+// The admin download and the three token-keyed public downloads answer with
+// the same file, rebuilt on demand so a signature drawn a minute ago is in it.
+async function ensureReportPDF(report) {
+  const absolute = () =>
+    report.filePath ? path.join(__dirname, "..", report.filePath) : null;
+
+  let filePath = absolute();
+  if (!filePath || !fs.existsSync(filePath)) {
+    console.log("Generating PDF for report", report.slNo);
+    await generatePDF(report);
+    filePath = absolute();
+  }
+  return filePath && fs.existsSync(filePath) ? filePath : null;
+}
+
+async function streamReportPDF(report, res) {
+  const filePath = await ensureReportPDF(report);
+  if (!filePath) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to generate PDF file",
+    });
+  }
+
+  const stat = fs.statSync(filePath);
+  if (stat.size === 0) {
+    return res.status(500).json({ success: false, message: "PDF file is empty" });
+  }
+
+  const reportDate = report.date ? new Date(report.date) : new Date();
+  const filename = `Service-Report-${report.slNo}-${reportDate.toISOString().split("T")[0]}.pdf`;
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("Content-Length", stat.size);
+  res.setHeader("Cache-Control", "no-cache");
+
+  const fileStream = fs.createReadStream(filePath);
+  fileStream.on("error", (error) => {
+    console.error("Error streaming file:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: "Error streaming PDF file",
+        error: error.message,
+      });
+    }
+  });
+  fileStream.pipe(res);
+}
+
+// A public download is authorised by the share token itself, exactly like the
+// public report endpoints: no admin session is involved and no other report
+// can be reached by guessing a report id.
+const publicPDF = (tokenField) => async (req, res) => {
+  try {
+    const report = await ServiceReport.findOne({ [tokenField]: req.params.token });
+    if (!report) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Invalid or expired link" });
+    }
+    await streamReportPDF(report, res);
+  } catch (error) {
+    console.error("Error in public PDF download:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: "Error downloading PDF",
+        error: error.message,
+      });
+    }
+  }
+};
+
+exports.downloadCustomerPDF = publicPDF("shareToken");
+exports.downloadEngineerPDF = publicPDF("engineerShareToken");
+exports.downloadDualPDF = publicPDF("dualShareToken");
+
 // ─── Download PDF ──────────────────────────────────────────────────────────
 exports.downloadPDF = async (req, res) => {
   try {
@@ -594,64 +674,7 @@ exports.downloadPDF = async (req, res) => {
       });
     }
 
-    console.log("Report found:", report._id);
-    console.log("File path in DB:", report.filePath);
-
-    if (!report.filePath) {
-      console.log("No PDF file path, generating now...");
-      await generatePDF(report);
-      await report.save();
-    }
-
-    const filePath = path.join(__dirname, "..", report.filePath);
-    console.log("Full file path:", filePath);
-
-    if (!fs.existsSync(filePath)) {
-      console.log("PDF file not found, regenerating...");
-      await generatePDF(report);
-      await report.save();
-    }
-
-    if (!fs.existsSync(filePath)) {
-      console.error("Failed to generate PDF file");
-      return res.status(500).json({
-        success: false,
-        message: "Failed to generate PDF file",
-      });
-    }
-
-    const stat = fs.statSync(filePath);
-    console.log("File size:", stat.size, "bytes");
-
-    if (stat.size === 0) {
-      console.error("PDF file is empty");
-      return res.status(500).json({
-        success: false,
-        message: "PDF file is empty",
-      });
-    }
-
-    const filename = `Service-Report-${report.slNo}-${report.date.toISOString().split("T")[0]}.pdf`;
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.setHeader("Content-Length", stat.size);
-    res.setHeader("Cache-Control", "no-cache");
-
-    const fileStream = fs.createReadStream(filePath);
-
-    fileStream.on("error", (error) => {
-      console.error("Error streaming file:", error);
-      if (!res.headersSent) {
-        res.status(500).json({
-          success: false,
-          message: "Error streaming PDF file",
-          error: error.message,
-        });
-      }
-    });
-
-    fileStream.pipe(res);
+    await streamReportPDF(report, res);
   } catch (error) {
     console.error("Error in downloadPDF:", error);
     if (!res.headersSent) {
@@ -901,40 +924,92 @@ exports.submitDualSignature = async (req, res) => {
         .json({ success: false, message: "Invalid or expired link" });
 
     const { role, name, signature, date, remarks } = req.body;
+    const signatureText = text(signature);
+    const signatureDate = toDate(date) || new Date();
 
-    if (role === "customer") {
-      report.userName = name;
-      report.userDate = date;
-      report.userSignature = signature;
-      // Update status
-      report.dualShareStatus =
-        report.dualShareStatus === "engineer_signed"
-          ? "both_signed"
-          : "customer_signed";
-      // Keep existing share fields in sync
-      report.shareStatus = "signed";
-      report.customerSignedAt = new Date();
-    } else if (role === "engineer") {
-      report.engineeringName = name;
-      report.engineeringDate = date;
-      report.engineeringSignature = signature;
-      report.engineerRemarks = remarks || "";
-      report.dualShareStatus =
-        report.dualShareStatus === "customer_signed"
-          ? "both_signed"
-          : "engineer_signed";
-      // Keep existing engineer share fields in sync
-      report.engineerShareStatus = "signed";
-      report.engineerSignedAt = new Date();
-    } else {
+    if (role !== "customer" && role !== "engineer") {
       return res
         .status(400)
         .json({ success: false, message: "role must be customer or engineer" });
     }
 
+    // A signature that is already recorded is never overwritten: reopening a
+    // link or a double tap must not replace a signature or its date.
+    const alreadySigned =
+      role === "customer"
+        ? Boolean(text(report.userSignature)) || report.shareStatus === "signed"
+        : Boolean(text(report.engineeringSignature)) ||
+          report.engineerShareStatus === "signed";
+    if (alreadySigned) {
+      return res.status(400).json({
+        success: false,
+        message:
+          role === "customer"
+            ? "Customer signature is already recorded."
+            : "Engineering signature is already recorded.",
+        status: report.dualShareStatus,
+      });
+    }
+
+    if (!text(name) || !signatureText) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Name and signature are required." });
+    }
+
+    if (role === "customer") {
+      report.userName = text(name);
+      report.userDate = signatureDate;
+      report.userSignature = signatureText;
+      // Customer remarks stay in the customer field; the engineer's own
+      // remarks are never written here and this never touches serviceRemarks.
+      if (remarks !== undefined)
+        report.customerRemarks = text(remarks) || report.customerRemarks;
+      // Keep existing share fields in sync
+      report.shareStatus = "signed";
+      report.customerSignedAt = new Date();
+    } else {
+      report.engineeringName = text(name);
+      report.engineeringDate = signatureDate;
+      report.engineeringSignature = signatureText;
+      // The PDF prints serviceRemarks as the service engineer's remarks, so
+      // the dual flow records them there too (they used to be filed under
+      // engineerRemarks only and never reached the PDF).
+      if (remarks !== undefined) {
+        report.serviceRemarks = text(remarks) || report.serviceRemarks;
+        report.engineerRemarks = text(remarks) || report.engineerRemarks;
+      }
+      // Keep existing engineer share fields in sync
+      report.engineerShareStatus = "signed";
+      report.engineerSignedAt = new Date();
+    }
+
+    // Worked out from the two stored signatures rather than the previous
+    // status string, so signing here after the other signature was collected
+    // through its own link still ends up as both_signed.
+    const customerSigned =
+      Boolean(text(report.userSignature)) || report.shareStatus === "signed";
+    const engineerSigned =
+      Boolean(text(report.engineeringSignature)) ||
+      report.engineerShareStatus === "signed";
+    report.dualShareStatus =
+      customerSigned && engineerSigned
+        ? "both_signed"
+        : customerSigned
+          ? "customer_signed"
+          : engineerSigned
+            ? "engineer_signed"
+            : "pending";
+
+    dropStoredPDF(report); // rebuilt on demand, now including this signature
     await report.save();
     invalidateListCache();
-    res.json({ success: true, status: report.dualShareStatus });
+    res.json({
+      success: true,
+      status: report.dualShareStatus,
+      customerSigned,
+      engineerSigned,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1047,6 +1122,24 @@ async function generatePDF(report) {
       const filename = `service-report-${report.slNo}-${Date.now()}.pdf`;
       const filePath = path.join(pdfDir, filename);
 
+      // A drawn signature is a PNG data URL; an uploaded one is a stored path.
+      const signatureSource = (value) => {
+        const raw = String(value || "").trim();
+        if (!raw) return null;
+        if (raw.startsWith("data:")) {
+          const base64 = raw.split(",")[1];
+          if (!base64) return null;
+          try {
+            return Buffer.from(base64, "base64");
+          } catch (err) {
+            return null;
+          }
+        }
+        const relative = raw.replace(/\\/g, "/").replace(/^\/+/, "");
+        const absolute = path.join(__dirname, "..", relative);
+        return fs.existsSync(absolute) ? absolute : null;
+      };
+
       console.log("Generating PDF at:", filePath);
 
       const doc = new PDFDocument({ margin: 50 });
@@ -1077,6 +1170,15 @@ async function generatePDF(report) {
       doc.text(`Model: ${report.machineModel || "N/A"}`);
       doc.text(`Serial Number: ${report.machineSerialNumber || "N/A"}`);
       doc.text(`Maintenance Type: ${report.maintenanceType || "N/A"}`);
+      if (report.installationDate)
+        doc.text(
+          `Installation Date: ${new Date(report.installationDate).toLocaleDateString()}`,
+        );
+      if (report.complaintDate)
+        doc.text(
+          `Complaint Date: ${new Date(report.complaintDate).toLocaleDateString()}`,
+        );
+      if (report.billNo) doc.text(`Bill No: ${report.billNo}`);
       doc.moveDown();
 
       // Technical Specifications
@@ -1171,11 +1273,14 @@ async function generatePDF(report) {
       doc.addPage();
       doc.fontSize(14).text("Remarks", { underline: true });
       doc.fontSize(10);
-      doc.text(`Service Remarks: ${report.serviceRemarks || "N/A"}`);
+      doc.text(
+        `Service Engineer Remarks: ${report.serviceRemarks || report.engineerRemarks || "N/A"}`,
+      );
       doc.text(`Customer Remarks: ${report.customerRemarks || "N/A"}`);
       doc.moveDown();
 
-      // Signatures
+      // Signatures — the drawn signature image is printed when one is stored,
+      // so the PDF shows the same sign-off the public pages show.
       doc.fontSize(14).text("Signatures", { underline: true });
       doc.fontSize(10);
       doc.text(`Service Engineer: ${report.serviceEngineerName || "N/A"}`);
@@ -1185,10 +1290,33 @@ async function generatePDF(report) {
         );
       }
       doc.moveDown();
-      doc.text(`Customer: ${report.userName || "N/A"}`);
-      if (report.userDate) {
-        doc.text(`Date: ${new Date(report.userDate).toLocaleDateString()}`);
-      }
+
+      const addSignature = (label, name, dateValue, signatureValue) => {
+        doc.fontSize(11).text(label, { underline: true });
+        doc.fontSize(10).text(`Name: ${name || "N/A"}`);
+        if (dateValue)
+          doc.text(`Date: ${new Date(dateValue).toLocaleDateString()}`);
+        const source = signatureSource(signatureValue);
+        if (source) {
+          try {
+            doc.image(source, { fit: [160, 60] });
+          } catch (sigError) {
+            console.error(`Could not add ${label} signature to PDF:`, sigError);
+            doc.text("Signature: stored");
+          }
+        } else {
+          doc.text("Signature: —");
+        }
+        doc.moveDown();
+      };
+
+      addSignature("Customer Signature", report.userName, report.userDate, report.userSignature);
+      addSignature(
+        "Engineering Signature",
+        report.engineeringName,
+        report.engineeringDate,
+        report.engineeringSignature,
+      );
 
       doc.end();
 
